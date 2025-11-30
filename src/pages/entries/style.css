@@ -338,3 +338,22 @@ body {
   color: rgba(255, 255, 255, 0.6);
   font-size: 12px;
 }
+
+/* Right-top container: EquityCurve + MaxDrawdown side by side */
+.metrics-right {
+  display: flex;
+  gap: 16px;
+  align-items: stretch; /* ensures same vertical span inside the panel */
+}
+
+/* EquityCurve takes most of the width */
+.metrics-right__equity {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* MaxDrawdown is narrower but full height */
+.metrics-right__drawdown {
+  flex: 0 0 24%; /* ~quarter of that right panel; adjust as you like */
+  min-width: 200px; /* prevents it from collapsing too much */
+}

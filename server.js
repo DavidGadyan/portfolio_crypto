@@ -154,6 +154,28 @@ function parseTradeFromDocSnap(docSnap, exchange, symbol) {
   return completeFromData || fromId;
 }
 
+// ---- RAW helpers (for full Firestore docs) ----
+function extractRawTradesFromDocData(data) {
+  if (!data || typeof data !== "object") return [];
+
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data.trades)) return data.trades;
+  if (Array.isArray(data.positions)) return data.positions;
+
+  const values = Object.values(data);
+  if (values.every((v) => v && typeof v === "object")) return values;
+
+  return [];
+}
+
+function parseRawTradeFromDocSnap(docSnap) {
+  const data = docSnap.data() || {};
+  return {
+    id: docSnap.id,
+    ...data,
+  };
+}
+
 const app = express();
 app.use(cors());
 app.use((req, _res, next) => {
@@ -240,7 +262,100 @@ app.get("/api/_firestore/collections", async (_req, res) => {
   }
 });
 
-// ===== Main: get trades =====
+// ===== NEW: get raw Firestore trades (no normalization) =====
+app.get("/api/coin-stats/raw", async (req, res) => {
+  const exchange = (req.query.exchange || "binance").toString();
+  const symbol = (req.query.symbol || "BTCUSDT").toString().toUpperCase();
+  const db = getDb();
+
+  const docCandidates = [
+    `${exchange}-${symbol}`,
+    `${exchange}-${symbol.toLowerCase()}`,
+    `${exchange}_${symbol}`,
+    `${exchange}_${symbol.toLowerCase()}`,
+  ];
+
+  try {
+    let trades = [];
+    let usedPath = null;
+
+    // 1) OLD LAYOUT: collection("coin-stats").doc("<exchange>-<SYMBOL>")
+    for (const docId of docCandidates) {
+      const ref = db.collection("coin-stats").doc(docId);
+      console.log(`[RAW] try old path: coin-stats/${docId}`);
+      try {
+        const snap = await ref.get();
+        if (snap.exists) {
+          const data = snap.data() || {};
+          trades = extractRawTradesFromDocData(data);
+          usedPath = `coin-stats/${docId}`;
+          console.log(`[RAW] FOUND old path; rawTrades=${trades.length}`);
+          break;
+        }
+      } catch (e) {
+        console.warn(
+          `[RAW] Error reading coin-stats/${docId}:`,
+          e?.message || e
+        );
+      }
+    }
+
+    // 2) NEW LAYOUT: a **root collection** named "<exchange>-<SYMBOL>"
+    if (!trades.length) {
+      const collName = `${exchange}-${symbol}`;
+      console.log(`[RAW] try new layout: collection ${collName}`);
+      try {
+        const qs = await db.collection(collName).limit(1000).get();
+        if (!qs.empty) {
+          trades = qs.docs.map((doc) => parseRawTradeFromDocSnap(doc));
+          usedPath = `${collName}/* (docs)`;
+          console.log(
+            `[RAW] NEW layout hit; docs=${qs.size} rawTrades=${trades.length}`
+          );
+        } else {
+          console.log(`[RAW] NEW layout: collection ${collName} is empty`);
+        }
+      } catch (e) {
+        console.warn(
+          `[RAW] Error reading collection ${collName}:`,
+          e?.message || e
+        );
+      }
+    }
+
+    if (!trades.length) {
+      const cols = await db.listCollections();
+      const names = cols.map((c) => c.id);
+      return res.status(200).json({
+        symbol,
+        exchange,
+        trades: [],
+        debug: {
+          projectId,
+          databaseId: DB_ID,
+          attempted: {
+            oldDocPaths: docCandidates.map((id) => `coin-stats/${id}`),
+            newCollection: `${exchange}-${symbol}`,
+          },
+          rootCollections: names,
+          note: "RAW endpoint: no trades found at old or new layout.",
+        },
+      });
+    }
+
+    return res.status(200).json({
+      symbol,
+      exchange,
+      trades,
+      debug: { projectId, databaseId: DB_ID, usedPath },
+    });
+  } catch (err) {
+    console.error("[RAW] Fatal error:", err?.message || err, err);
+    return res.status(500).json({ error: String(err?.message || err) });
+  }
+});
+
+// ===== Main: get trades (normalized) =====
 app.get("/api/coin-stats", async (req, res) => {
   const exchange = (req.query.exchange || "binance").toString();
   const symbol = (req.query.symbol || "BTCUSDT").toString().toUpperCase();
